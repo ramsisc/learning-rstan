@@ -1,0 +1,15 @@
+name: "Ramsis is learning rstan"
+output_dir: "."
+navbar:
+  title: "Ramsis personal Website"
+  left:
+    - text: "Home"
+      href: index.html
+    - text: "Projects"     
+      href: projects.html  
+    - text: "About Me"
+      href: about.html
+output:
+  html_document:
+    theme: flatly
+    css: style.css
