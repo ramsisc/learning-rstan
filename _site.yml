@@ -5,8 +5,8 @@ navbar:
   left:
     - text: "Home"
       href: index.html
-    - text: "Projects"     
-      href: projects.html  
+    - text: "pool-binary-trials exercise"     
+      href: pool-binary-trials.html  
     - text: "About Me"
       href: about.html
 output:

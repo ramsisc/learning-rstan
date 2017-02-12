@@ -1,0 +1,400 @@
+---
+title: "Hierarchical Partial Pooling for Repeated Binary Trials"
+---
+
+
+
+## Start
+Excercises for http://mc-stan.org/documentation/case-studies/pool-binary-trials.html
+Hierarchical Partial Pooling for Repeated Binary Trials
+
+```{r}
+library(rstan);
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+df <- read.csv("efron-morris-75-data.tsv", sep="\t");
+df <- with(df, data.frame(FirstName, LastName, 
+                          Hits, At.Bats, 
+                          RemainingAt.Bats,
+                          RemainingHits = SeasonHits - Hits));
+print(df);
+```
+## model pooled
+```{r}
+N <- dim(df)[1]
+K <- df$At.Bats              # initial trials
+y <- df$Hits                 # initial successes
+K_new <- df$RemainingAt.Bats; # new trials
+y_new <- df$RemainingHits;    # new successes
+```
+
+
+Fitting the model.Assuming each player's at-bats are independent Bernoulli trials and each player is independent leads to the complete data likelihood 
+$p(y \, | \, \phi) = \prod_{n=1}^N \mathsf{Binomial}(y_n \, | \, K_n, \phi)$. 
+
+Model specification chunck in pool.stan for the fully pooled model is 
+
+parameters { 
+  real<lower=0, upper=1> phi;  // chance of success (pooled) 
+} 
+model { 
+  y ~ binomial(K, phi);  // likelihood 
+} 
+
+```{r, results="hide", cache=TRUE}
+M <- 10000;
+fit_pool <- stan("pool.stan", data=c("N", "K", "y", "K_new", "y_new"),
+                 iter=(M / 2), chains=4);
+```
+
+```{r}
+ss_pool <- extract(fit_pool);
+print(fit_pool, c("phi"), probs=c(0.1, 0.5, 0.9));
+```
+
+
+## model no-pooled
+Let us turn now to the no-pooled model.
+Model specification chunck in nopool.stan for the no pooled model is 
+
+parameters {
+  vector<lower=0, upper=1>[N] theta; // chance of success
+}
+model {
+  y ~ binomial(K, theta);  // likelihood
+}
+
+
+```{r, results="hide", cache=TRUE}
+fit_no_pool <- stan("no-pool.stan", data=c("N", "K", "y", "K_new", "y_new"),
+                    iter=(M / 2), chains=4);
+ss_no_pool <- extract(fit_no_pool);
+```
+
+Get the model fit
+```{r}
+print(fit_no_pool, c("theta"), probs=c(0.1, 0.5, 0.9));
+
+```
+
+## model partial pooled
+Let us now conisder the partial pooling model (hierarchical). We will assume a beta distribution as the prior. 
+
+$ p(\theta_n \, | \, \alpha, \beta)\ = \ \mathsf{Beta}(\theta_n \, | \, \alpha, \beta)$. 
+
+The hyperpriors are reparameterize to $\alpha = \kappa \, \phi$ and  $\beta = \kappa \, (1 - \phi)$. 
+
+Thus 
+$\phi = \frac{\alpha}{\alpha + \beta}$ and $\kappa = \alpha + \beta$. We have uniform prior on uniform prior on $\phi$ and a Pareto prior on $\kappa$
+
+
+```{r, results="hide", cache=TRUE}
+fit_hier <- stan("hier.stan", data=c("N", "K", "y", "K_new", "y_new"),
+                 iter=(M / 2), chains=4,
+                 seed=1234, 
+                 control=list(stepsize=0.01, adapt_delta=0.99));
+ss_hier <- extract(fit_hier);
+```
+
+```{r}
+print(fit_hier, c("theta", "kappa", "phi"), probs=c(0.1, 0.5, 0.9));
+
+```
+
+
+Plot the fitted values for $\phi$ and $\kappa$ on the unconstrained scale, which is the space over which Stan is sampling.
+
+
+```{r}
+df_bda3_fig_5_3 <- with(ss_hier,
+                        data.frame(x = log(phi / (1 - phi)),
+                                   y = log(kappa)));
+phi_sim <- ss_hier$phi;
+kappa_sim <- ss_hier$kappa;
+df_bda3_fig_5_3 <- data.frame(x = log(phi_sim / (1 - phi_sim)),
+                              y = log(kappa_sim));
+library(ggplot2);
+plot_bda3_fig_5_3 <- 
+  ggplot(df_bda3_fig_5_3, aes(x=x, y=y)) +
+  geom_point(shape=19, alpha=0.15) +
+  xlab("logit(phi) = log(alpha / beta)") +
+  ylab("log(kappa) = log(alpha + beta)");
+plot_bda3_fig_5_3;
+```
+
+and for a specefic theta
+```{r}
+inv_logit <- function(u) { 1 / (1 + exp(-u)); }
+theta1_sim <- ss_hier$theta[ , 1];
+kappa_sim <- ss_hier$kappa;
+df_funnel <- data.frame(x = inv_logit(theta1_sim),
+                        y = log(kappa_sim));
+library(ggplot2);
+plot_funnel<- 
+  ggplot(df_funnel, aes(x=x, y=y)) +
+  geom_point(shape=19, alpha=0.15) +
+  xlab("logit(theta[1])") + 
+  ylab("log(kappa)");
+plot_funnel;
+```
+
+
+
+## model partial pooled with log-odds
+Alternative parameterization  of the chance-of-success $\theta_n$:  log-odds $alpha_n=logit(\theta_n)$. To help the sampler, we use Non-Centered Parameterization: standard unit normal prior for $alpha_n$. The likelihood is 
+$p(y_n \, | \, \alpha^{\mathrm{std}}_n, \mu, \sigma, K)\ = \ \mathsf{BinomialLogit}(K_n, \ \mu + \sigma \, \alpha_n)$
+
+
+```{r, results="hide", cache=TRUE}
+fit_hier_logit <- stan("hier-logit.stan", data=c("N", "K", "y", "K_new", "y_new"),
+                       iter=(M / 2), chains=4,
+                       control=list(stepsize=0.01, adapt_delta=0.99));
+ss_hier_logit <- extract(fit_hier_logit);
+```
+
+```{r}
+print(fit_hier_logit, c("alpha_std", "theta", "mu", "sigma"), probs=c(0.1, 0.5, 0.9));
+```
+
+
+
+## Observed vs. Estimated Chance of Success
+
+```{r}
+ss_quantile <- function(ss, N, q) {
+  result <- rep(NA, N);
+  for (n in 1:N) {
+    result[n] <- sort(ss$theta[,n])[M * q];
+  }
+  return(result);
+}
+
+theta_10_pool <- ss_quantile(ss_pool, N, 0.1);
+theta_50_pool <- ss_quantile(ss_pool, N, 0.5);
+theta_90_pool <- ss_quantile(ss_pool, N, 0.9);
+
+theta_10_no_pool <- ss_quantile(ss_no_pool, N, 0.1);
+theta_50_no_pool <- ss_quantile(ss_no_pool, N, 0.5);
+theta_90_no_pool <- ss_quantile(ss_no_pool, N, 0.9);
+
+theta_10_hier <- ss_quantile(ss_hier, N, 0.1);
+theta_50_hier <- ss_quantile(ss_hier, N, 0.5);
+theta_90_hier <- ss_quantile(ss_hier, N, 0.9);
+
+theta_10_hier_logit <- ss_quantile(ss_hier_logit, N, 0.1);
+theta_50_hier_logit <- ss_quantile(ss_hier_logit, N, 0.5);
+theta_90_hier_logit <- ss_quantile(ss_hier_logit, N, 0.9);
+
+pop_mean <- sum(y) / sum(K);
+
+df_plot2 <- data.frame(x = rep(y / K, 4),
+                       y = c(theta_50_pool, theta_50_no_pool,
+                             theta_50_hier, theta_50_hier_logit),
+                       model = c(rep("complete pooling", N),
+                                 rep("no pooling", N),
+                                 rep("partial pooling", N),
+                 rep("partial pooling (log odds)", N)));
+
+plot_bda3_fig_5_4 <-
+  ggplot(df_plot2, aes(x=x, y=y)) +
+  geom_hline(aes(yintercept=pop_mean), colour="lightpink") +
+  geom_abline(intercept=0, slope=1, colour="skyblue") +
+  facet_grid(. ~ model) +
+  geom_errorbar(aes(ymin=c(theta_10_pool, theta_10_no_pool,
+                           theta_10_hier, theta_10_hier_logit),
+                    ymax=c(theta_90_pool, theta_90_no_pool,
+                           theta_90_hier, theta_90_hier_logit)),
+                width=0.005, colour="gray60") +
+  geom_point(colour="gray30", size=0.75) +
+  coord_fixed() +
+  scale_x_continuous(breaks = c(0.2, 0.3, 0.4)) +
+  xlab("observed rate, y[n] / K[n]") +
+  ylab("chance of success, theta[n]") +
+  ggtitle("Posterior Medians and 80% intervals\n(red line: population mean;  blue line: MLE)")
+plot_bda3_fig_5_4;
+```
+
+
+
+## Q1 We usually recommend fitting simulated data. We have done that in the past for these models, but it is a worthwhile exercise. For all or some of the models, generate data according to the prior and test whether the fitted model recovers the parameter values within their appropriate intervals.
+
+
+Data creation function
+
+```{r}
+sim_data <- function(theta,N) {
+  K <- df$At.Bats 
+  y <- rep(0,N)
+  K_new <- df$RemainingAt.Bats; # new trials
+  y_new <- df$RemainingHits;    # new successes
+  for (i in 1:N){
+    set.seed(123)
+    y[i] <- rbinom(1,K[i], theta[i])
+  }
+return(list(N=N,K=K,y=y,K_new=K_new,y_new=y_new))
+  }
+
+```
+
+
+Fuction for estimate models om simulated data
+
+```{r, }
+#set M (trails)
+  M <- 10000;
+
+
+estimate_all_model<-function(){
+  recover_simulated_pool <- stan("pool.stan",
+                  data=c("N", "K", "y", "K_new", "y_new"),
+                  chains = 4,
+                  iter = (M / 2),
+                  seed = 1328025050
+                  )
+  ss_sim_pool <- extract(recover_simulated_pool);
+  
+  #Let us estimate now an no-pool model.
+  recover_simulated_nopool <- stan("nopool.stan",
+                  data=c("N", "K", "y", "K_new", "y_new"),
+                  chains = 4,
+                  iter =(M / 2),
+                  seed = 1328025050
+                  )
+  ss_sim_nopool <- extract(recover_simulated_nopool);
+  
+  #Estimate the hierachical with beta distribution as the prior
+  recover_simulated_hier <- stan("hier.stan", data=c("N", "K", "y", "K_new", "y_new"),
+                   iter=(M / 2), chains=4,
+                   seed=1328025050, 
+                   control=list(stepsize=0.01, adapt_delta=0.99));
+  ss_sim_hier <- extract(recover_simulated_hier);
+  
+  #Partial ppoling with log-odds
+  recover_simulated_hier_logit <- stan("hier-logit.stan", data=c("N", "K", "y", "K_new", "y_new"),
+                         iter=(M / 2), chains=4,
+                         control=list(stepsize=0.01, adapt_delta=0.99));
+  ss_sim_hier_logit <- extract(recover_simulated_hier_logit);
+  
+  #print result
+  print(recover_simulated_pool, c("theta"), probs=c(0.1, 0.5, 0.9));
+  print(recover_simulated_nopool, c("theta"), probs=c(0.1, 0.5, 0.9));
+  print(recover_simulated_hier, c("theta", "kappa", "phi"), probs=c(0.1, 0.5, 0.9));
+  print(recover_simulated_hier_logit, c("alpha_std", "theta", "mu", "sigma"), probs=c(0.1, 0.5, 0.9));
+  #give extracts as return object
+  return(list(ss_sim_pool=ss_sim_pool,ss_sim_nopool=ss_sim_nopool,ss_sim_hier=ss_sim_hier,ss_sim_hier_logit=ss_sim_hier_logit))
+}
+```
+
+function to plot recovered parameters through model estimation versus true parameter that has been used to generate the simulated data 
+
+```{r}
+plot_all_model<-function(model_list){
+  #model_list=estimated_models_sim_partial
+  theta_10_pool <- ss_quantile(model_list$ss_sim_pool, N, 0.1);
+  theta_50_pool <- ss_quantile(model_list$ss_sim_pool, N, 0.5);
+  theta_90_pool <- ss_quantile(model_list$ss_sim_pool, N, 0.9);
+  
+  theta_10_no_pool <- ss_quantile(model_list$ss_sim_nopool, N, 0.1);
+  theta_50_no_pool <- ss_quantile(model_list$ss_sim_nopool, N, 0.5);
+  theta_90_no_pool <- ss_quantile(model_list$ss_sim_nopool, N, 0.9);
+  
+  theta_10_hier <- ss_quantile(model_list$ss_sim_hier, N, 0.1);
+  theta_50_hier <- ss_quantile(model_list$ss_sim_hier, N, 0.5);
+  theta_90_hier <- ss_quantile(model_list$ss_sim_hier, N, 0.9);
+  
+  theta_10_hier_logit <- ss_quantile(model_list$ss_sim_hier_logit, N, 0.1);
+  theta_50_hier_logit <- ss_quantile(model_list$ss_sim_hier_logit, N, 0.5);
+  theta_90_hier_logit <- ss_quantile(model_list$ss_sim_hier_logit, N, 0.9);
+  
+  pop_mean <- sum(y) / sum(K);
+  
+  df_plot2 <- data.frame(x = rep(y / K, 4),
+                         y = c(theta_50_pool, theta_50_no_pool,
+                               theta_50_hier, theta_50_hier_logit),
+                         model = c(rep("complete pooling", N),
+                                   rep("no pooling", N),
+                                   rep("partial pooling", N),
+                   rep("partial pooling (log odds)", N)));
+  
+  plot_bda3_fig_5_4_sim <-
+    ggplot(df_plot2, aes(x=x, y=y)) +
+    geom_hline(aes(yintercept=pop_mean), colour="lightpink") +
+    geom_abline(intercept=0, slope=1, colour="skyblue") +
+    facet_grid(. ~ model) +
+    geom_errorbar(aes(ymin=c(theta_10_pool, theta_10_no_pool,
+                             theta_10_hier, theta_10_hier_logit),
+                      ymax=c(theta_90_pool, theta_90_no_pool,
+                             theta_90_hier, theta_90_hier_logit)),
+                  width=0.005, colour="gray60") +
+    geom_point(colour="gray30", size=0.75) +
+    coord_fixed() +
+    scale_x_continuous(breaks = c(0.2, 0.3, 0.4)) +
+    xlab("observed rate, y[n] / K[n]") +
+    ylab("chance of success, theta[n]") +
+    ggtitle("Posterior Medians and 80% intervals\n(red line: population mean;  blue line: MLE, chosen theta for the data simulation)")
+  plot_bda3_fig_5_4_sim;
+  return(plot_bda3_fig_5_4_sim)
+}
+```
+
+
+
+
+### Data generation with no-pool assumption
+
+```{r}
+#create simulated data and estimate models
+rm(N,K,y,K_new,y_new)
+N <- dim(df)[1]
+theta <- round(seq(0.1,0.4,length=N),3)
+sim_data_create<-sim_data(theta=theta,N)
+N=unlist(sim_data_create['N'])
+K=unlist(sim_data_create['K'])
+y=unlist(sim_data_create['y'])
+K_new=unlist(sim_data_create['K_new'])
+y_new=unlist(sim_data_create['y_new'])
+print(cbind(K,y))
+```
+
+estimate model
+
+```{r,message = FALSE, warnings = FALSE}
+estimated_models_sim <- estimate_all_model()
+```
+
+Compare recovered $\theta$'s and the chosen $\theta$'s for the simuation.
+
+```{r}
+plot_all_model(model_list=estimated_models_sim)
+```
+
+### Data generation with partial pool assumption
+
+```{r}
+#create simulated data and estimate models
+rm(N,K,y,K_new,y_new)
+N <- dim(df)[1]
+set.seed(123)
+theta <- sort(round(rnorm(N,0.2,0.1),3))
+sim_data_create<-sim_data(theta=theta,N)
+N=unlist(sim_data_create['N'])
+K=unlist(sim_data_create['K'])
+y=unlist(sim_data_create['y'])
+K_new=unlist(sim_data_create['K_new'])
+y_new=unlist(sim_data_create['y_new'])
+print(cbind(K,y))
+
+```
+
+
+
+```{r,message = FALSE, warnings = FALSE}
+estimated_models_sim_partial <- estimate_all_model()
+```
+
+Compare recovered $\theta$'s and the chosen $\theta$'s for the simuation.
+
+```{r}
+plot_all_model(model_list=estimated_models_sim_partial)
+```
